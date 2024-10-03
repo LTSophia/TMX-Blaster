@@ -13,7 +13,7 @@
     <Name>TMX Blaster</Name>
     <RootNamespace>TMXBest</RootNamespace>
     <LaunchProvider>Standard Python launcher</LaunchProvider>
-    <CommandLineArguments>image.tmx image33.png</CommandLineArguments>
+    <CommandLineArguments>"C:\Users\sophia\Downloads\tumblr_034ebdd508a8d719f2c2486aae1d0384_1d8dcacb_1280.jpg"</CommandLineArguments>
     <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">

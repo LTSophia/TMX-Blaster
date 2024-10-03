@@ -1,29 +1,75 @@
 import cv2
 import numpy as np
-import PIL
+import PIL.Image
 from PIL import Image
+import scipy.stats
 import os
 import argparse
 
 import TMX
 
-def Image2TMX(image_file : str, out_file : str, palette_size : int, HWM = None, VWM = None, user_id = 0, palette_override = TMX.TMXFile.PSMTC32, color_override = None):
+def _get_mode_color(image : Image, palette_size : int):
+    temp_palettized = image.quantize(palette_size, Image.Quantize.MEDIANCUT)
+    return tuple(np.array(temp_palettized.getpalette()).reshape((palette_size, -1))[scipy.stats.mode(np.array(temp_palettized).reshape((-1, 1)))[0][0]])
+    
+def Image2TMX(image_file : str, out_file : str, palette_size : int, width=None, height=None, HWM = None, VWM = None, user_id = 0, clut_id=0, texture_id=0, palette_override = TMX.TMXFile.PSMTC32, color_override = None, solidify=True):
     file_name = os.path.splitext(os.path.basename(out_file))[0]
     with Image.open(image_file) as image:
-        width, height = image.size
-    
-        powof2 = 2 ** np.arange(16)
-        if width not in powof2 or height not in powof2:
-            orig_width = width
-            orig_height = height
-            closest = (np.abs(powof2 - width)).argmin()
-            n_width = powof2[closest]
-            closest = (np.abs(powof2 - height)).argmin()
-            n_height = powof2[closest]
-            print(f'Resizing image from {orig_width}x{orig_height} to {n_width}x{n_height}...')
-            image = image.resize((n_width, n_height), resample=Image.Resampling.LANCZOS)
+        w, h = image.size
+        
+        if not (width == w and height == h):
+            if width is not None:
+                w = width
+            if height is not None:
+                h = height
             
-        width, height = image.size
+            o_width, o_height = image.size
+        
+            if width is not None and height is not None:
+                print(f'Resizing image from {o_width}x{o_height} to {width}x{height}...')
+                image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
+            else:
+                powof2 = 2 ** np.arange(16)
+                if w not in powof2 or h not in powof2:
+                    closest = (np.abs(powof2 - w)).argmin()
+                    n_width = powof2[closest]
+                    closest = (np.abs(powof2 - h)).argmin()
+                    n_height = powof2[closest]
+                    if round(n_width/n_height, 3) == round(w/h, 3):
+                        print(f'Resizing image from {o_width}x{o_height} to {n_width}x{n_height}...')
+                        image = image.resize((n_width, n_height), resample=Image.Resampling.LANCZOS)
+                    elif n_width - w < n_height - h:
+                        nn_height = round((h/w) * n_width)
+                        print(f'Resizing image from {o_width}x{o_height} to {n_width}x{nn_height}...')
+                        image = image.resize((n_width, nn_height))
+                        if image.mode.endswith(('a', 'A')):
+                            n_image = Image.new('RGBA', (n_width, n_height), (0, 0, 0, 0))
+                        elif palette_size > 0: 
+                            mode_color = _get_mode_color(image, palette_size)
+                            n_image = Image.new('RGB', (n_width, n_height), mode_color)
+                        else:
+                            mode_color = _get_mode_color(image, 256)
+                            n_image = Image.new('RGB', (n_width, n_height), mode_color)
+                        print(f'Expanding image to {n_width}x{n_height}...')
+                        n_image.paste(image, (0, 0))
+                        image = n_image
+                    else:
+                        nn_width = round((w/h) * n_height)
+                        print(f'Resizing image from {o_width}x{o_height} to {nn_width}x{n_height}...')
+                        image = image.resize((nn_width, n_height))
+                        if image.mode.endswith(('a', 'A')):
+                            n_image = Image.new('RGBA', (n_width, n_height), (0, 0, 0, 0))
+                        elif palette_size > 0: 
+                            mode_color = _get_mode_color(image, palette_size)
+                            n_image = Image.new('RGB', (n_width, n_height), mode_color)
+                        else:
+                            mode_color = _get_mode_color(image, 256)
+                            n_image = Image.new('RGB', (n_width, n_height), mode_color)
+                        print(f'Expanding image to {n_width}x{n_height}...')
+                        n_image.paste(image, (0, 0))
+                        image = n_image
+            
+            w, h = image.size
     
         palette = None
         out_npimg = None
@@ -33,16 +79,17 @@ def Image2TMX(image_file : str, out_file : str, palette_size : int, HWM = None, 
             np_image = np.array(image, dtype=np.uint8)
             alpha = np_image[:, :, 3]
             np_image = np_image[:, :, :3]
-        
-            print("Inpainting...")
-            max_alpha = np.max(alpha)
-            inpaint_mask = cv2.bitwise_not(np.maximum(255,  alpha + (255 - max_alpha) + (max_alpha//3)))
-            np_image = cv2.inpaint(np_image, inpaint_mask, 4, cv2.INPAINT_TELEA)
+            
+            if solidify:
+                print("Solidifying...")
+                max_alpha = np.max(alpha)
+                inpaint_mask = cv2.bitwise_not(np.maximum(255,  alpha + (255 - max_alpha) + (max_alpha//2)))
+                np_image = cv2.inpaint(np_image, inpaint_mask, 4, cv2.INPAINT_TELEA)
         
 
             if palette_size > 0:
-                for y in range(height):
-                      for x in range(width):
+                for y in range(h):
+                      for x in range(w):
                           if alpha[y, x] < 10:
                               alpha[y, x] = 0
                               np_image[y, x] = [0, 0, 0]
@@ -74,7 +121,7 @@ def Image2TMX(image_file : str, out_file : str, palette_size : int, HWM = None, 
                 palette = np.array(image.getpalette(None), dtype=np.uint8).reshape((palette_size, -1))
             out_npimg = np.array(image, dtype=np.uint8)
         print("Creating TMX data...")
-        tmx = TMX.TMXFile().from_image(out_npimg, user_id, file_name, HWM, VWM, 0, 0, palette=palette, palette_mode=palette_override, color_mode=color_override)
+        tmx = TMX.TMXFile().from_image(out_npimg, user_id, file_name, HWM, VWM, texture_id=texture_id, clut_id=clut_id, palette=palette, palette_mode=palette_override, color_mode=color_override)
             
         print("Saving TMX...")
         tmx.save(out_file)
@@ -96,6 +143,16 @@ if __name__ == "__main__":
                         type=str,
                         help='Can be a PNG, JPEG, etc. or TGA for encoding, ' + 
                              'or TMX for decoding.')
+    parser.add_argument('--height',
+                        type=int,
+                        choices=2 ** np.arange(16, dtype=int),
+                        default=None,
+                        help='Sets the value to resize the image\'s height to.')
+    parser.add_argument('--width',
+                        type=int,
+                        choices=2 ** np.arange(16, dtype=int),
+                        default=None,
+                        help='Sets the value to resize the image\'s width to.')
     parser.add_argument('-p', '--palette',
                         type=int,
                         choices=[16, 256],
@@ -112,16 +169,28 @@ if __name__ == "__main__":
                         type=str,
                         default=None,
                         help='Set the User Comment for the TMX. Defaults to the name of the file.')
+    
+    parser.add_argument('--nosolidify',
+                        action='store_false',
+                        help='Sets the program to NOT solidify the image before making it a TMX. (ADVANCED OPTION: Not recommended)')
+    parser.add_argument('-ti', '--textureid',
+                        type=int,
+                        default=0,
+                        help='Set the Texture ID of the TMX. (ADVANCED OPTION: Usually unnecessary)')
+    parser.add_argument('-ci', '--clutid',
+                        type=int,
+                        default=0,
+                        help='Set the CLUT ID of the TMX. (ADVANCED OPTION: Unknown Functionality)')
     parser.add_argument('-hwm', '--horizontalwrapmode',
                         type=str,
                         choices=['repeat', 'clamp'],
                         default=None,
-                        help='The wrap mode used for horizontal in-engine effects. (does not affect exported image)')
+                        help='The wrap mode used for horizontal in-engine effects. (ADVANCED OPTION: does not affect exported image)')
     parser.add_argument('-vwm', '--verticalwrapmode',
                         type=str,
                         choices=['repeat', 'clamp'],
                         default=None,
-                        help='The wrap mode used for vertical in-engine effects. (does not affect exported image)')
+                        help='The wrap mode used for vertical in-engine effects. (ADVANCED OPTION: does not affect exported image)')
     parser.add_argument('--palettetype',
                         type=str,
                         choices=['32', '16', '16S'],
@@ -199,4 +268,4 @@ if __name__ == "__main__":
             elif args.pixeltype.upper() == '4HL':
                 color_override = TMX.TMXFile.PSMT4HL
         
-        Image2TMX(args.input, output, args.palette, horizontal_wrap_mode, vertical_wrap_mode, user_id=user_id, palette_override=palette_override, color_override=color_override)
+        Image2TMX(args.input, output, args.palette, args.width, args.height, horizontal_wrap_mode, vertical_wrap_mode, user_id=user_id, clut_id=args.clutid, texture_id=args.textureid, palette_override=palette_override, color_override=color_override, solidify=args.nosolidify)

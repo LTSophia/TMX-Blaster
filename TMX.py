@@ -390,7 +390,7 @@ class TMXFile:
                 self.HorizontalWrapMode = self.VerticalWrapMode = True
             self.texture_id = np.uint32(int.from_bytes(tmxfile.read(4), 'little'))
             self.clut_id = np.uint32(int.from_bytes(tmxfile.read(4), 'little'))
-            self.comment = str(tmxfile.read(28), 'shift_jis')
+            self.comment = str(tmxfile.read(28).rstrip(), 'shift_jis')
             #buffer_np = np.frombuffer(tmxfile.read(self.palette_size), dtype=self.palette_mode, count=-1)
             pal_bytes = tmxfile.read(self.palette_size)[:self.palette_size]
             self.palette = []
