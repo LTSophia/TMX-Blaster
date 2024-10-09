@@ -1,4 +1,6 @@
-# TMXBest
+# TMX Blaster
+>The only TMX tool you should ever need.
+
 A (for now) command-line tool to convert TMX files to regular image files (such as PNG, TGA, etc.), regular image files to TMX files, TMX to TMX, with all available color/palette formats, all available options and settings. 
 
 Made to be feature-complete with the [Atlus TMX Editor](https://tcrf.net/Shin_Megami_Tensei:_Nocturne#Leftover_TMX_Editor) that was left over in a release of Nocturne, but with less jank and easier to use with batch scripting or other applications.
