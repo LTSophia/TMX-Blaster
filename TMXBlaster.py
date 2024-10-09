@@ -22,7 +22,7 @@ FORMAT_STRINGS = {
 
 ACCEPTED_SIZES = 2 ** np.arange(16)
 
-DONT_RESIZE_THRESH = 0.2  # Dont resize the image, just crop or expand if the difference is 4% of the width/height (guesswork value)
+DONT_RESIZE_THRESH = 0.04  # Dont resize the image, just crop or expand if the difference is 5% of the width/height (guesswork value)
 
 def _get_resized_with_bg(image : Image, re_width : int, re_height : int, bg_width : int, bg_height : int, palette_size = 0):
     if palette_size > 0: 
@@ -47,9 +47,9 @@ def _get_resized_with_bg(image : Image, re_width : int, re_height : int, bg_widt
     else:
         color_mode = 'RGB'
         filler = _get_mode_color(image, reduce_color)
-    bg_image = Image.new(color_mode, (bg_width, bg_width), filler)
+    bg_image = Image.new(color_mode, (bg_width, bg_height), filler)
     
-    print(f'Cropping image to {bg_width}x{bg_width}...')
+    print(f'Cropping image to {bg_width}x{bg_height}...')
     location = (0 - max(0, (r_width - bg_width) // 2), 0 - max(0, (r_height - bg_height) // 2)) # centers image if container is too small
     bg_image.paste(image, location)
     return bg_image

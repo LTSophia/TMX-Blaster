@@ -15,7 +15,6 @@
     <LaunchProvider>Standard Python launcher</LaunchProvider>
     <CommandLineArguments>"C:\Users\sophia\Downloads\image.png"</CommandLineArguments>
     <EnableNativeCodeDebugging>True</EnableNativeCodeDebugging>
-    <IsWindowsApplication>True</IsWindowsApplication>
     <InterpreterId>Global|PythonCore|3.12</InterpreterId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
