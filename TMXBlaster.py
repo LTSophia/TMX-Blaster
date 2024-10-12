@@ -344,7 +344,7 @@ if __name__ == "__main__":
         else:
             output = args.output
             
-        main(args.input, output, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify)
+        main(args.input, output, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify, quiet=quiet)
     else:
         if not os.path.isdir(args.input):
             raise FileNotFoundError(args.input)
