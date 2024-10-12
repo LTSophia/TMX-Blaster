@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import PIL
 from PIL import Image
 import scipy
 import os
@@ -140,15 +139,74 @@ def _image_process(image_file : str, palette_size : int, width=None, height=None
        
     return image, palette
 
+def main(input_file, output, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify):
+    in_split = os.path.splitext(input_file)
+    out_split = os.path.splitext(output)
+
+    if user_comment is None:
+        comment = out_split[0]
+    else:
+        comment = user_comment
+
+    tmx = TMX.TMXFile(user_id, comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override)
+    
+    if in_split[1].upper() == ".TMX":
+        image = TMX.TMXFile.from_tmx(input_file)
+        
+        if image.shape[2] == 4 and image[:,:,3].min() == 255:
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+            
+        if palette_size > 0:
+            image, palette = _quantize(image, palette_size, is_16_color)
+        else:
+            palette = None
+        
+    else:
+        image, palette = _image_process(input_file, palette_size, width, height, no_solidify, is_16_color)
+        
+
+    # Output Handling
+    if out_split[1].upper() == '.TMX':
+        tmx = tmx.from_image(image, palette)
+        tmx.to_tmx(output)
+    else:
+        if palette is not None:
+            image = palette[image]
+        Image.fromarray(image).save(output)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
                     prog='TMX Blaster',
                     description='The only TMX tool you should ever need.')
+    parser.add_argument('--batch',
+                        action='store_true',
+                        help='Enable batch folder processing.')
+    parser.add_argument('-r', '--recursive',
+                        action='store_true',
+                        help='Process all subfolders. [BATCH PROCESSING]')
+    parser.add_argument('-flat', '--flattenoutput',
+                        action='store_true',
+                        help='When recursive, do not create extra folders to match the original file structure. [BATCH PROCESSING]')
+    parser.add_argument('-if', '--infiletype',
+                        type=str,
+                        default='TMX',
+                        help='Filetype to process in the folder. [BATCH PROCESSING]')
+    parser.add_argument('-of', '--outfiletype',
+                        type=str,
+                        default=None,
+                        help='Filetype to export too. [BATCH PROCESSING]')
     parser.add_argument('input',
-                        metavar='input filename',
                         type=str,
                         help='Can be a PNG, JPEG, etc. or TGA for encoding, ' + 
-                             'or TMX for decoding.')
+                             'or TMX for decoding. \n' + 
+                             'The folder to process in Batch Processing mode.')
+    parser.add_argument('output',
+                        type=str,
+                        nargs='?',
+                        default=None,
+                        help='TMX file or image file to output. ' +
+                             'Defaults to TMX for encoding and TGA for decoding. \n' + 
+                             'The folder to export to in Batch Processing mode.')
     parser.add_argument('--height',
                         type=int,
                         choices=ACCEPTED_SIZES,
@@ -175,7 +233,6 @@ if __name__ == "__main__":
                         type=str,
                         default=None,
                         help='Set the User Comment for the TMX. Defaults to the name of the file.')
-    
     parser.add_argument('--nosolidify',
                         action='store_false',
                         help='Sets the program to NOT solidify the image before making it a TMX. (ADVANCED OPTION: Not recommended)')
@@ -207,29 +264,9 @@ if __name__ == "__main__":
                         choices=['32', '24', '16', '16S', '8', '8H', '4', '4HH', '4HL'],
                         default=None,
                         help='The color mode used to store the pixel information (ADVANCED OPTION)')
-    parser.add_argument('output',
-                        metavar='output filename',
-                        type=str,
-                        nargs='?',
-                        default=None,
-                        help='TMX file or image file to output. ' +
-                             'Defaults to TMX for encoding and TGA for decoding.')
     args = parser.parse_args()
     
-    if not os.path.isfile(args.input):
-        raise FileNotFoundError(args.input)
     
-    in_split = os.path.splitext(args.input)
-    
-    if args.output is None:
-        output = in_split[0]
-        if in_split[1].upper() == '.TMX':
-            output += '.tga'
-        else:
-            output += '.tmx'
-    else:
-        output = args.output
-            
     if args.userid == 0 and args.bustup:
         user_id = args.bustup
     else:
@@ -238,7 +275,7 @@ if __name__ == "__main__":
     if args.usercomment is not None:
         user_comment = args.usercomment
     else:
-        user_comment = os.path.splitext(os.path.basename(output))[0]
+        user_comment = None
     
     if args.horizontalwrapmode is not None:
         horizontal_wrap_mode = (args.horizontalwrapmode.lower() == 'clamp' or args.horizontalwrapmode.lower() == 'c')
@@ -266,28 +303,68 @@ if __name__ == "__main__":
     else:
         color_override = None
         
-    tmx = TMX.TMXFile(user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, args.textureid, args.clutid, palette_override, color_override)
-    out_split = os.path.splitext(output)
-    if in_split[1].upper() == ".TMX":
-        image = TMX.TMXFile.from_tmx(args.input)
-        
-        if image.shape[2] == 4 and image[:,:,3].min() == 255:
-            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
-            
-        if palette_size > 0:
-            image, palette = _quantize(image, args.palette, is_16_color)
-        else:
-            palette = None
-        
-    else:
-        image, palette = _image_process(args.input, palette_size, args.width, args.height, args.nosolidify, is_16_color)
-        
+    width = args.width
+    height = args.height
+    
+    texture_id = args.textureid
+    clut_id = args.clutid
+    no_solidify = args.nosolidify
 
-    # Output Handling
-    if os.path.splitext(output)[1].upper() == '.TMX':
-        tmx = tmx.from_image(image, palette)
-        tmx.to_tmx(output)
+    is_batch = args.batch or os.path.isdir(args.input)
+
+    if not is_batch:
+        if not os.path.isfile(args.input):
+            raise FileNotFoundError(args.input)
+    
+        in_split = os.path.splitext(args.input)
+    
+        if args.output is None:
+            output = in_split[0]
+            if in_split[1].upper() == '.TMX':
+                output += '.tga'
+            else:
+                output += '.tmx'
+        else:
+            output = args.output
+            
+        main(args.input, output, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify)
     else:
-        if palette is not None:
-            image = palette[image]
-        Image.fromarray(image).save(output)
+        if not os.path.isdir(args.input):
+            raise FileNotFoundError(args.input)
+        in_file_type = '.' + str(args.infiletype).strip().strip('.')
+        
+        if args.outfiletype is None:
+            if in_file_type == '.TMX':
+                out_file_type = '.TGA'
+            else:
+                out_file_type = '.TMX'
+        else:
+            out_file_type = '.' + str(args.outfiletype).strip().strip('.')
+            
+        if args.output is None:
+            output = args.input
+        else:
+            output = args.output
+            if os.path.isfile(output):
+                output = os.path.dirname(output)
+            elif not os.path.isdir(output):
+                os.makedirs(output, exist_ok=True)
+        
+        if not args.recursive:
+            files = [file_name for file_name in os.listdir(args.input) if file_name.upper().endswith(in_file_type)]
+            for file_name in files:
+                in_file = os.path.join(args.input, file_name)
+                out_file = os.path.join(output, os.path.splitext(file_name)[0] + out_file_type)
+                main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify)
+        else:
+            out_file_path = output
+            for root, dirs, files in os.walk(args.input):
+                if not args.flattenoutput:
+                    out_file_path = os.path.join(output, os.path.relpath(root, args.input))
+                    if not os.path.isdir(out_file_path):
+                        os.makedirs(out_file_path, exist_ok=True)
+                for file_name in files:
+                    if file_name.upper().endswith(in_file_type):
+                        in_file = os.path.join(root, file_name)
+                        out_file = os.path.join(out_file_path, os.path.splitext(file_name)[0] + out_file_type)
+                        main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify)
