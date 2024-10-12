@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from PIL import Image
-import scipy
+from scipy import stats
 import os
 import argparse
 
@@ -21,9 +21,9 @@ FORMAT_STRINGS = {
 
 ACCEPTED_SIZES = 2 ** np.arange(16)
 
-DONT_RESIZE_THRESH = 0.04  # Dont resize the image, just crop or expand if the difference is 5% of the width/height (guesswork value)
+DONT_RESIZE_THRESH = 0.05  # Dont resize the image, just crop or expand if the difference is 5% of the width/height (guesswork value)
 
-def _get_resized_with_bg(image : Image, re_width : int, re_height : int, bg_width : int, bg_height : int, palette_size = 0):
+def _get_resized_with_bg(image : Image, re_width : int, re_height : int, bg_width : int, bg_height : int, palette_size = 0, crop = True, quiet = False):
     if palette_size > 0: 
         reduce_color = palette_size
     else:
@@ -31,33 +31,39 @@ def _get_resized_with_bg(image : Image, re_width : int, re_height : int, bg_widt
     
     o_width = image.size[0]
     o_height = image.size[1]
-    if (o_width - re_width) < re_width * DONT_RESIZE_THRESH or abs(o_height - re_height) < re_height * DONT_RESIZE_THRESH:
-        r_width = image.size[0]
+    if crop and (o_width - re_width) < re_width * DONT_RESIZE_THRESH or abs(o_height - re_height) < re_height * DONT_RESIZE_THRESH:
+        r_width = o_width
         r_height = o_height
     else:
         r_width = re_width
         r_height = re_height
-        print(f'Resizing image from {o_width}x{o_height} to {r_width}x{r_height}...')
+        if not quiet:
+            print(f'Resizing image from {o_width}x{o_height} to {r_width}x{r_height}...')
         image = image.resize((re_width, re_height))
     
-    if image.mode.endswith(('a', 'A')):
-        color_mode =  'RGBA'
-        filler = (0, 0, 0, 0)
-    else:
-        color_mode = 'RGB'
-        filler = _get_mode_color(image, reduce_color)
-    bg_image = Image.new(color_mode, (bg_width, bg_height), filler)
+    if not (re_width == bg_width and re_height == bg_height):
+        if image.mode.endswith(('a', 'A')):
+            color_mode =  'RGBA'
+            filler = (0, 0, 0, 0)
+        else:
+            color_mode = 'RGB'
+            filler = _get_mode_color(image, reduce_color)
+        bg_image = Image.new(color_mode, (bg_width, bg_height), filler)
     
-    print(f'Cropping image to {bg_width}x{bg_height}...')
-    location = (0 - max(0, (r_width - bg_width) // 2), 0 - max(0, (r_height - bg_height) // 2)) # centers image if container is too small
-    bg_image.paste(image, location)
-    return bg_image
+        if not quiet:
+            print(f'Cropping image to {bg_width}x{bg_height}...')
+        location = (0 - max(0, (r_width - bg_width) // 2), 0 - max(0, (r_height - bg_height) // 2)) # centers image if container is too small
+        bg_image.paste(image, location)
+        return bg_image
+    else:
+        return image
+    
 
 def _get_mode_color(image : Image, palette_size : int):
     temp_palettized = image.quantize(palette_size, Image.Quantize.MEDIANCUT)
-    return tuple(np.array(temp_palettized.getpalette()).reshape((palette_size, -1))[scipy.stats.mode(np.array(temp_palettized).reshape((-1, 1)))[0][0]])
+    return tuple(np.array(temp_palettized.getpalette()).reshape((palette_size, -1))[stats.mode(np.array(temp_palettized).reshape((-1, 1)))[0][0]])
     
-def _image_rescale(image_file : str, width : int, height : int, palette_size = 0):
+def _image_rescale(image_file : str, width : int, height : int, palette_size = 0, quiet = False):
     image = None
     
     with Image.open(image_file) as in_image:
@@ -76,7 +82,7 @@ def _image_rescale(image_file : str, width : int, height : int, palette_size = 0
             h = height
         
         if width is not None and height is not None:
-            image = _get_resized_with_bg(image, width, height, width, height, palette_size)
+            image = _get_resized_with_bg(image, width, height, width, height, palette_size, crop=False, quiet=quiet)
         else:
             if w not in ACCEPTED_SIZES or h not in ACCEPTED_SIZES:
                 closest = (np.abs(ACCEPTED_SIZES - w)).argmin()
@@ -85,27 +91,28 @@ def _image_rescale(image_file : str, width : int, height : int, palette_size = 0
                 n_height = ACCEPTED_SIZES[closest]
                 
                 if round(n_width/n_height, 3) == round(w/h, 3):
-                    image = _get_resized_with_bg(image, n_width, n_height, n_width, n_height, palette_size)
+                    image = _get_resized_with_bg(image, n_width, n_height, n_width, n_height, palette_size, quiet=quiet)
                 elif abs(n_width - w) < abs(n_height - h):
                     nn_height = round((h/w) * n_width)
-                    image = _get_resized_with_bg(image, n_width, nn_height, n_width, n_height, palette_size)
+                    image = _get_resized_with_bg(image, n_width, nn_height, n_width, n_height, palette_size, quiet=quiet)
                 else:
                     nn_width = round((w/h) * n_height)
-                    image = _get_resized_with_bg(image, nn_width, n_height, n_width, n_height, palette_size)
+                    image = _get_resized_with_bg(image, nn_width, n_height, n_width, n_height, palette_size, quiet=quiet)
     out_image = np.array(image, dtype=np.uint8)
     
     return out_image
-def _solidify(image : np.ndarray):
+def _solidify(image : np.ndarray, quiet = False):
     alpha = image[:, :, 3]
 
-    print("Solidifying...")
+    if not quiet:
+        print("Solidifying...")
     max_alpha = np.max(alpha)
     inpaint_mask = cv2.bitwise_not(np.maximum(255,  alpha + (255 - max_alpha) + (max_alpha//2)))
     image[:,:,:3] = cv2.inpaint(image[:, :, :3], inpaint_mask, 4, cv2.INPAINT_TELEA)
     
     return image
     
-def _quantize(image : np.ndarray, palette_size : int, is_16_color = False):
+def _quantize(image : np.ndarray, palette_size : int, is_16_color = False, quiet = False):
     if image.shape[2] == 4: # Set all Fully transparent colors to consistent black
         alpha = np.dstack((image[:, :, 3], image[:, :, 3], image[:, :, 3], image[:, :, 3]))
         image = np.where(alpha > 10, image, np.zeros_like(image))
@@ -115,7 +122,8 @@ def _quantize(image : np.ndarray, palette_size : int, is_16_color = False):
         if image.shape[2] == 4:
             image[:, :, 3]  = (np.round((image[:, :, 3] / 255) * 2, decimals=0).astype(dtype=np.uint8) / 2 * 255).astype(dtype=np.uint8)
 
-    print("Quantizing...")
+    if not quiet:
+        print("Quantizing...")
     out_image = Image.fromarray(image)
     out_image = out_image.quantize(palette_size, kmeans=1, dither=Image.Dither.FLOYDSTEINBERG )
     
@@ -126,11 +134,11 @@ def _quantize(image : np.ndarray, palette_size : int, is_16_color = False):
             
     return np.array(out_image, dtype=np.uint8), palette
     
-def _image_process(image_file : str, palette_size : int, width=None, height=None, solidify=True, is_16_color = False):
+def _image_process(image_file : str, palette_size : int, width=None, height=None, solidify=True, is_16_color = False, quiet = False):
     image = _image_rescale(image_file, width, height, palette_size)
     
     if solidify and image.shape[2] == 4:
-        image = _solidify(image)
+        image = _solidify(image, quiet=quiet)
                 
     if palette_size > 0:
         image, palette = _quantize(image, palette_size, is_16_color)
@@ -139,9 +147,11 @@ def _image_process(image_file : str, palette_size : int, width=None, height=None
        
     return image, palette
 
-def main(input_file, output, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify):
+def main(input_file : str, output_file : str, width : int, height : int, palette_size : int, user_id : int, user_comment : str, horizontal_wrap_mode, vertical_wrap_mode, texture_id : int, clut_id : int, palette_override, color_override, is_16_color : bool, no_solidify : bool, quiet = False):
+    if not quiet:
+        print(f'Converting {os.path.basename(input_file)} to {os.path.basename(output_file)}...')
     in_split = os.path.splitext(input_file)
-    out_split = os.path.splitext(output)
+    out_split = os.path.splitext(output_file)
 
     if user_comment is None:
         comment = out_split[0]
@@ -157,27 +167,32 @@ def main(input_file, output, width, height, palette_size, user_id, user_comment,
             image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
             
         if palette_size > 0:
-            image, palette = _quantize(image, palette_size, is_16_color)
+            image, palette = _quantize(image, palette_size, is_16_color, quiet=quiet)
         else:
             palette = None
         
     else:
-        image, palette = _image_process(input_file, palette_size, width, height, no_solidify, is_16_color)
+        image, palette = _image_process(input_file, palette_size, width, height, no_solidify, is_16_color, quiet=quiet)
         
 
     # Output Handling
     if out_split[1].upper() == '.TMX':
         tmx = tmx.from_image(image, palette)
-        tmx.to_tmx(output)
+        tmx.to_tmx(output_file)
     else:
         if palette is not None:
             image = palette[image]
-        Image.fromarray(image).save(output)
+        Image.fromarray(image).save(output_file)
+    if not quiet:
+        print(f'Conversion complete!')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
                     prog='TMX Blaster',
                     description='The only TMX tool you should ever need.')
+    parser.add_argument('-q', '--quiet',
+                        action='store_true',
+                        help='Disable any command-line output.')
     parser.add_argument('--batch',
                         action='store_true',
                         help='Enable batch folder processing.')
@@ -309,6 +324,8 @@ if __name__ == "__main__":
     texture_id = args.textureid
     clut_id = args.clutid
     no_solidify = args.nosolidify
+    
+    quiet = args.quiet
 
     is_batch = args.batch or os.path.isdir(args.input)
 
@@ -350,13 +367,30 @@ if __name__ == "__main__":
             elif not os.path.isdir(output):
                 os.makedirs(output, exist_ok=True)
         
+        if not quiet:
+            print(f'Converting {in_file_type} files in {os.path.basename(args.input)} to {out_file_type} files in {os.path.basename(output)}...')
+        
         if not args.recursive:
             files = [file_name for file_name in os.listdir(args.input) if file_name.upper().endswith(in_file_type)]
+            all_num = len(files)
+            num_chars = len(str(all_num))
+            i = 1
+            last_str_len = 0
             for file_name in files:
+                if not quiet:
+                    progress_str = f'<{str(i).zfill(num_chars)}|{all_num}> [{filename}] -> [{os.path.splitext(file_name)[0] + out_file_type}]'
+                    padding = ' ' * max(0, last_str_len - len(progress_str))
+                    print(f'{progress_str}{padding}', end='\r')
+                    last_str_len = len(progress_str)
+                
                 in_file = os.path.join(args.input, file_name)
                 out_file = os.path.join(output, os.path.splitext(file_name)[0] + out_file_type)
-                main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify)
+                main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify, quiet=True)
         else:
+            last_str_len = 0
+            input_folder_name = os.path.basename(args.input)
+            output_folder_name = os.path.basename(output)
+            
             out_file_path = output
             for root, dirs, files in os.walk(args.input):
                 if not args.flattenoutput:
@@ -367,4 +401,13 @@ if __name__ == "__main__":
                     if file_name.upper().endswith(in_file_type):
                         in_file = os.path.join(root, file_name)
                         out_file = os.path.join(out_file_path, os.path.splitext(file_name)[0] + out_file_type)
-                        main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify)
+                        if not quiet:
+                            in_print = str(os.path.join(input_folder_name, os.path.relpath(in_file, args.input))).strip('\\/')
+                            out_print = str(os.path.join(output_folder_name, os.path.relpath(out_file, output))).strip('\\/')
+                            progress_str = f'[{in_print}] -> [{out_print}]'
+                            padding = ' ' * max(0, last_str_len - len(progress_str))
+                            print(f'{progress_str}{padding}', end='\r')
+                            last_str_len = len(progress_str)
+                        main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify, quiet=True)
+        if not quiet:
+            print('\n Complete!')
