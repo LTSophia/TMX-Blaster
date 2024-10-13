@@ -378,7 +378,7 @@ if __name__ == "__main__":
             last_str_len = 0
             for file_name in files:
                 if not quiet:
-                    progress_str = f'<{str(i).zfill(num_chars)}|{all_num}> [{filename}] -> [{os.path.splitext(file_name)[0] + out_file_type}]'
+                    progress_str = f'<{str(i).zfill(num_chars)}|{all_num}> [{file_name}] -> [{os.path.splitext(file_name)[0] + out_file_type}]'
                     padding = ' ' * max(0, last_str_len - len(progress_str))
                     print(f'{progress_str}{padding}', end='\r')
                     last_str_len = len(progress_str)
