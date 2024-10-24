@@ -382,7 +382,7 @@ if __name__ == "__main__":
                     padding = ' ' * max(0, last_str_len - len(progress_str))
                     print(f'{progress_str}{padding}', end='\r')
                     last_str_len = len(progress_str)
-                
+                    i += 1
                 in_file = os.path.join(args.input, file_name)
                 out_file = os.path.join(output, os.path.splitext(file_name)[0] + out_file_type)
                 main(in_file, out_file, width, height, palette_size, user_id, user_comment, horizontal_wrap_mode, vertical_wrap_mode, texture_id, clut_id, palette_override, color_override, is_16_color, no_solidify, quiet=True)

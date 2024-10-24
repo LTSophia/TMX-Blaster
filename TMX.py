@@ -1,5 +1,13 @@
 import numpy as np
 
+
+def _256_palette_swap(palette : np.ndarray):
+    palette_swap = palette.reshape((8, 4, 8, -1))
+    _temp = palette_swap[:,1,:,:].copy()
+    palette_swap[:,1,:,:] = palette_swap[:,2,:,:]
+    palette_swap[:,2,:,:] = _temp
+    return palette_swap.reshape((256, -1))
+
 class TMXFile:
     class PSMTC32:
         code = 0x00  #Format code
@@ -144,6 +152,7 @@ class TMXFile:
         self.palette_mode       = palette_mode
         self.color_mode         = color_mode
     
+
     def from_image(self, image : np.ndarray, palette = None):
         if palette is not None and palette.shape[-1] == 3:
             #palette = np.insert(palette, -1, 255, axis=1)
@@ -190,6 +199,8 @@ class TMXFile:
             if not color_mode.is_color:
                 palette_length = (color_mode.palette_size * palette_mode.get_length()) // 8
                 palette_data = palette_mode.from_bytes(np.fromfile(tmxfile, palette_mode.dtype, count=palette_length))
+                if color_mode.palette_size == 256:
+                    palette_data = _256_palette_swap(palette_data)
             image_length = ((width * height) * color_mode.get_length()) // 8
             image_data = color_mode.from_bytes(np.fromfile(tmxfile, color_mode.dtype, count=image_length), palette_data)
         return image_data.reshape((height, width, -1)) 
@@ -198,11 +209,7 @@ class TMXFile:
         palette_bytes = []
         if self.palette_data is not None:
             if self.palette_data.shape[0] == 256:
-                palette_swap = self.palette_data.reshape((8, 4, 8, -1))
-                _temp = palette_swap[:,1,:,:].copy()
-                palette_swap[:,1,:,:] = palette_swap[:,2,:,:]
-                palette_swap[:,2,:,:] = _temp
-                out_palette = palette_swap.reshape((256, -1))
+                out_palette = _256_palette_swap(self.palette_data)
             else:
                 out_palette = self.palette_data
             palette_bytes = self.palette_mode.to_bytes(out_palette)
