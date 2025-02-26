@@ -13,9 +13,10 @@
     <Name>TMX Blaster</Name>
     <RootNamespace>TMXBest</RootNamespace>
     <LaunchProvider>Standard Python launcher</LaunchProvider>
-    <CommandLineArguments>"C:\Users\sophia\Downloads\image.png"</CommandLineArguments>
+    <CommandLineArguments>-p 256 Sol3.jpg</CommandLineArguments>
     <EnableNativeCodeDebugging>True</EnableNativeCodeDebugging>
-    <InterpreterId>Global|PythonCore|3.12</InterpreterId>
+    <InterpreterId>MSBuild|tmxENV|$(MSBuildProjectFullPath)</InterpreterId>
+    <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -30,7 +31,19 @@
     <Compile Include="TMXBlaster.py" />
   </ItemGroup>
   <ItemGroup>
+    <InterpreterReference Include="Global|PythonCore|3.11" />
     <InterpreterReference Include="Global|PythonCore|3.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <Interpreter Include="tmxENV\">
+      <Id>tmxENV</Id>
+      <Version>3.12</Version>
+      <Description>tmxENV (Python 3.12 (64-bit))</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

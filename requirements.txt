@@ -1,0 +1,6 @@
+numpy
+opencv-python
+pillow
+colour-science
+matplotlib
+numba

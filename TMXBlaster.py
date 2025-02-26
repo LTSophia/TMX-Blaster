@@ -1,11 +1,22 @@
 import cv2
 import numpy as np
 from PIL import Image
-from scipy import stats
 import os
+import sys
 import argparse
+import colour
+from numba import jit
 
 import TMX
+
+if getattr(sys, 'frozen', False):
+    application_path = os.path.dirname(sys.executable)
+elif __file__:
+    application_path = os.path.dirname(__file__)
+
+## To Do:
+#   - Reorder quantizing to before resizing? Get palette, then resize, then apply palette to image perhaps
+#   - Add better paletteing, with OkLab colorspace and CV2 kmeans quantization
 
 FORMAT_STRINGS = {
     '32' : TMX.TMXFile.PSMTC32,
@@ -21,86 +32,81 @@ FORMAT_STRINGS = {
 
 ACCEPTED_SIZES = 2 ** np.arange(16)
 
-DONT_RESIZE_THRESH = 0.05  # Dont resize the image, just crop or expand if the difference is 5% of the width/height (guesswork value)
+SIXTEEN_BIT_COLORS = np.load(os.path.join(application_path, '16bitcolor.npy'))
 
-def _get_resized_with_bg(image : Image, re_width : int, re_height : int, bg_width : int, bg_height : int, palette_size = 0, crop = True, quiet = False):
-    if palette_size > 0: 
-        reduce_color = palette_size
-    else:
-        reduce_color = 256
-    
-    o_width = image.size[0]
-    o_height = image.size[1]
-    if crop and (o_width - re_width) < re_width * DONT_RESIZE_THRESH or abs(o_height - re_height) < re_height * DONT_RESIZE_THRESH:
-        r_width = o_width
-        r_height = o_height
-    else:
-        r_width = re_width
-        r_height = re_height
-        if not quiet:
-            print(f'Resizing image from {o_width}x{o_height} to {r_width}x{r_height}...')
-        image = image.resize((re_width, re_height))
-    
-    if not (re_width == bg_width and re_height == bg_height):
-        if image.mode.endswith(('a', 'A')):
-            color_mode =  'RGBA'
-            filler = (0, 0, 0, 0)
-        else:
-            color_mode = 'RGB'
-            filler = _get_mode_color(image, reduce_color)
-        bg_image = Image.new(color_mode, (bg_width, bg_height), filler)
-    
-        if not quiet:
-            print(f'Cropping image to {bg_width}x{bg_height}...')
-        location = (0 - max(0, (r_width - bg_width) // 2), 0 - max(0, (r_height - bg_height) // 2)) # centers image if container is too small
-        bg_image.paste(image, location)
-        return bg_image
-    else:
-        return image
-    
+#OkLab format + alpha: Lightness, green-to-red, blue-to-yellow, alpha values
+COLOR_WEIGHT = np.array([1, 1, 1, 1])
 
-def _get_mode_color(image : Image, palette_size : int):
-    temp_palettized = image.quantize(palette_size, Image.Quantize.MEDIANCUT)
-    return tuple(np.array(temp_palettized.getpalette()).reshape((palette_size, -1))[stats.mode(np.array(temp_palettized).reshape((-1, 1)))[0][0]])
+@jit(nopython=True)
+def floyd_steinberg(image, palette):
+    # image: np.array of shape (height, width, 4), dtype=float
+    # works in-place!
+    h, w = image.shape[:2]
+    index_image = np.zeros((h, w), dtype=np.uint8)
+    pal_vals = palette * COLOR_WEIGHT
+
+    for y in range(h):
+        for x in range(w):
+            old = image[y, x]
+            col_vals = old * COLOR_WEIGHT
+            col_vals[0] = max(0.0, min(1.0, col_vals[0]))
+            col_vals[1] = max(-0.25, min(0.3, col_vals[1]))
+            col_vals[2] = max(-0.32, min(0.2, col_vals[2]))
+            index = np.sum((pal_vals - col_vals) ** 2, axis=1).argmin()
+            new = palette[index]
+            index_image[y, x] = index
+            error = old - new
+            # precomputing the constants helps
+            if x + 1 < w:
+                image[y, x + 1] += error * 0.4375 # right, 7 / 16
+            if (y + 1 < h) and (x + 1 < w):
+                image[y + 1, x + 1] += error * 0.0625 # right, down, 1 / 16
+            if y + 1 < h:
+                image[y + 1, x] += error * 0.3125 # down, 5 / 16
+            if (x - 1 >= 0) and (y + 1 < h): 
+                image[y + 1, x - 1] += error * 0.1875 # left, down, 3 / 16
+    return index_image
     
 def _image_rescale(image_file : str, width : int, height : int, palette_size = 0, quiet = False):
     image = None
     
     with Image.open(image_file) as in_image:
-        if in_image.mode.upper().endswith('A'):
-            image = in_image.convert('RGBA')
-        else:
-            image = in_image.convert('RGB')
+        # convert to RGBA to make image manipulation easier
+        image = in_image.convert('RGBA')
         
     assert image is not None, 'Error loading image.'
+
+    og_w, og_h = image.size
     w, h = image.size
-        
-    if width != w or height != h:
-        if width is not None:
-            w = width
-        if height is not None:
-            h = height
-        
+
+    # if the original image is the desired width and height or the original image is an acceptable size and a custom width and height isn't given,
+    #  then the image is already fine,
+    if not((width == og_w and height == og_h) or (width is None and height is None and og_w in ACCEPTED_SIZES and og_h in ACCEPTED_SIZES)):
         if width is not None and height is not None:
-            image = _get_resized_with_bg(image, width, height, width, height, palette_size, crop=False, quiet=quiet)
+            image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
         else:
-            if w not in ACCEPTED_SIZES or h not in ACCEPTED_SIZES:
-                closest = (np.abs(ACCEPTED_SIZES - w)).argmin()
-                n_width = ACCEPTED_SIZES[closest]
-                closest = (np.abs(ACCEPTED_SIZES - h)).argmin()
-                n_height = ACCEPTED_SIZES[closest]
-                
-                if round(n_width/n_height, 3) == round(w/h, 3):
-                    image = _get_resized_with_bg(image, n_width, n_height, n_width, n_height, palette_size, quiet=quiet)
-                elif abs(n_width - w) < abs(n_height - h):
-                    nn_height = round((h/w) * n_width)
-                    image = _get_resized_with_bg(image, n_width, nn_height, n_width, n_height, palette_size, quiet=quiet)
-                else:
-                    nn_width = round((w/h) * n_height)
-                    image = _get_resized_with_bg(image, nn_width, n_height, n_width, n_height, palette_size, quiet=quiet)
+            if width is not None:
+                aspect_ratio = float(og_h/og_w)
+                w = width
+                h = round(aspect_ratio * width)
+            elif height is not None:
+                aspect_ratio = float(og_w/og_h)
+                h = height
+                w = round(aspect_ratio * height)
+            
+            if og_w != w or og_h != h:
+                image = image.resize((w, h), resample=Image.Resampling.LANCZOS)
+            
+            closest = np.searchsorted(ACCEPTED_SIZES,[w,],side='right')[0]
+            w = ACCEPTED_SIZES[closest]
+            closest = np.searchsorted(ACCEPTED_SIZES,[h,],side='right')[0]
+            h = ACCEPTED_SIZES[closest]
+
     out_image = np.array(image, dtype=np.uint8)
     
-    return out_image
+    return out_image, h, w
+
+## Solidify image with OpenCV
 def _solidify(image : np.ndarray, quiet = False):
     alpha = image[:, :, 3]
 
@@ -111,40 +117,108 @@ def _solidify(image : np.ndarray, quiet = False):
     image[:,:,:3] = cv2.inpaint(image[:, :, :3], inpaint_mask, 4, cv2.INPAINT_TELEA)
     
     return image
-    
-def _quantize(image : np.ndarray, palette_size : int, is_16_color = False, quiet = False):
-    if image.shape[2] == 4: # Set all Fully transparent colors to consistent black
-        alpha = np.dstack((image[:, :, 3], image[:, :, 3], image[:, :, 3], image[:, :, 3]))
-        image = np.where(alpha > 10, image, np.zeros_like(image))
-    
-    if is_16_color:
-        image[:, :, :3] = np.round(( np.round((image[:, :, :3] / 255) * 31, decimals=0).astype(dtype=np.uint8) / 31) * 255).astype(dtype=np.uint8)
-        if image.shape[2] == 4:
-            image[:, :, 3]  = (np.round((image[:, :, 3] / 255) * 2, decimals=0).astype(dtype=np.uint8) / 2 * 255).astype(dtype=np.uint8)
 
+def _pad_image(image, h, w, palette = None, alpha = True):
+    cur_h, cur_w = image.shape[:2]
+    if h != cur_h or w != cur_w:
+        if palette is not None:
+            if alpha:
+                background_index = palette[:,3].argmin()
+            else:
+                values, counts = np.unique(image.flatten(), return_counts=True)
+                background_index = values[counts.argmax()]
+            canvas = np.zeros((h, w), dtype=np.uint8)
+            img_h, img_w = image.shape
+            canvas[:,:] = background_index
+            canvas[:img_h, :img_w] = image
+            image = canvas
+        else:
+            if not alpha:
+                background_color = np.array([255, 255, 255, 255], dtype=np.uint8)
+            canvas = np.zeros((h, w, 4), dtype=np.uint8)
+            img_h, img_w = image.shape[:2]
+            if not alpha:
+                canvas[:,:] = background_color
+            canvas[:img_h, :img_w] = image
+            image = canvas
+    return image
+    
+## Quantize Image
+def _quantize(image : np.ndarray, palette_size : int, is_16_color = False, dither = True, quiet = False):
+    # set all fully transparent colors to consistent black (helps greatly with preserving mre colors in quantized image)
+    _alpha_stack = np.dstack((image[:, :, 3], image[:, :, 3], image[:, :, 3], image[:, :, 3]))
+    image = np.where(_alpha_stack > 10, image, np.zeros_like(image))
+    
     if not quiet:
         print("Quantizing...")
-    out_image = Image.fromarray(image)
-    out_image = out_image.quantize(palette_size, kmeans=1, dither=Image.Dither.FLOYDSTEINBERG )
+
+    # define starting image and alpha values
+    rgb = np.float32(image[:, :, :3]) / 255
+    alpha = np.float32(image[:, :, 3]) / 255
+
+    # convert to Oklab colorspace
+    xyz = colour.sRGB_to_XYZ(rgb)
+    oklab = colour.XYZ_to_Oklab(xyz)
     
-    palette = np.array(out_image.getpalette(None), dtype=np.uint8).reshape((palette_size, -1))
-    if palette.shape[-1] == 4:
-        palette[:, 3] = np.where(palette[:, 3] <= 245, palette[:, 3], 255)
-        palette[:, 3] = np.where(palette[:, 3] >= 10, palette[:, 3], 0)
-            
-    return np.array(out_image, dtype=np.uint8), palette
+    # combine Oklab colors with alpha and reshape
+    oklab = np.dstack((oklab, alpha))
+    oklab_colors = oklab.reshape((-1,4))
     
+    if is_16_color:
+        # set the colors to quantize into to a precalculated list of valid 16 bit colors
+        labels = SIXTEEN_BIT_COLORS
+    else:
+        labels = None
+
+    # define criteria and quantize with kmeans
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, _pal_img, palette = cv2.kmeans(np.float32(oklab_colors), palette_size, labels, criteria, 10, cv2.KMEANS_PP_CENTERS)
+
+    if dither:
+        indexes = floyd_steinberg(oklab, palette)
+    else:
+        indexes = _pal_img
+
+    # convert palette to RGB colorspace
+    pal_alpha = np.round(palette[:, 3] * 255, decimals=0).astype(dtype=np.uint8)
+    palette = palette[:, :3]
+    palette = palette.reshape((-1, 1, 3))
+    pal_xyz = colour.Oklab_to_XYZ(palette)
+    pal_rgb = colour.XYZ_to_sRGB(pal_xyz)
+    pal_rgb = np.round(pal_rgb * 255, decimals=0).astype(dtype=np.uint8)
+    
+    pal_rgb = pal_rgb.reshape((-1, 3))
+    
+    pal_alpha = pal_alpha.reshape((-1, 1))
+    pal_rgb = np.hstack((pal_rgb, pal_alpha))
+    pal_rgb[:, 3] = np.where(pal_rgb[:, 3] <= 245, pal_rgb[:, 3], 255)
+
+    return indexes, pal_rgb
+
+## Main function controlling image preparation and editing
 def _image_process(image_file : str, palette_size : int, width=None, height=None, solidify=True, is_16_color = False, quiet = False):
-    image = _image_rescale(image_file, width, height, palette_size)
+    image, h, w = _image_rescale(image_file, width, height, palette_size)
     
-    if solidify and image.shape[2] == 4:
-        image = _solidify(image, quiet=quiet)
-                
+    alpha = False
+    if image[:,:,3].min() < 255:
+        alpha = True
+        if solidify:
+            image = _solidify(image, quiet=quiet)
+    
     if palette_size > 0:
-        image, palette = _quantize(image, palette_size, is_16_color)
+        dither = min(image.shape[0], image.shape[1]) > 128
+        image, palette = _quantize(image, palette_size, is_16_color, dither=dither, quiet=quiet)
     else:
         palette = None
-       
+
+    image = _pad_image(image, h, w, palette, alpha)
+               
+    if palette is not None:
+        height, width = image.shape[:2]
+        out_image = palette[image.flatten()].reshape((height, width, -1))
+    else:
+        out_image = image
+
     return image, palette
 
 def main(input_file : str, output_file : str, width : int, height : int, palette_size : int, user_id : int, user_comment : str, horizontal_wrap_mode, vertical_wrap_mode, texture_id : int, clut_id : int, palette_override, color_override, is_16_color : bool, no_solidify : bool, quiet = False):
@@ -163,8 +237,9 @@ def main(input_file : str, output_file : str, width : int, height : int, palette
     if in_split[1].upper() == ".TMX":
         image = TMX.TMXFile.from_tmx(input_file)
         
-        if image.shape[2] == 4 and image[:,:,3].min() == 255:
-            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+        if image.shape[2] < 4:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2RGBA)
+            image[:,:,3] = 255
             
         if palette_size > 0:
             image, palette = _quantize(image, palette_size, is_16_color, quiet=quiet)
