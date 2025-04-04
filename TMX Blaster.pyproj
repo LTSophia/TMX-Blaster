@@ -13,7 +13,7 @@
     <Name>TMX Blaster</Name>
     <RootNamespace>TMXBest</RootNamespace>
     <LaunchProvider>Standard Python launcher</LaunchProvider>
-    <CommandLineArguments>-p 256 Sol3.jpg</CommandLineArguments>
+    <CommandLineArguments>-p 256 --width 512 --height 512 "C:\AemulusPackageManager\Packages\Persona 3 FES\P3P Main Menu\i_new_title007.png"</CommandLineArguments>
     <EnableNativeCodeDebugging>True</EnableNativeCodeDebugging>
     <InterpreterId>MSBuild|tmxENV|$(MSBuildProjectFullPath)</InterpreterId>
     <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>

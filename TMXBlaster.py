@@ -14,10 +14,6 @@ if getattr(sys, 'frozen', False):
 elif __file__:
     application_path = os.path.dirname(__file__)
 
-## To Do:
-#   - Reorder quantizing to before resizing? Get palette, then resize, then apply palette to image perhaps
-#   - Add better paletteing, with OkLab colorspace and CV2 kmeans quantization
-
 FORMAT_STRINGS = {
     '32' : TMX.TMXFile.PSMTC32,
     '24' : TMX.TMXFile.PSMTC24,
@@ -32,10 +28,10 @@ FORMAT_STRINGS = {
 
 ACCEPTED_SIZES = 2 ** np.arange(16)
 
-SIXTEEN_BIT_COLORS = np.load(os.path.join(application_path, '16bitcolor.npy'))
+FIFTEEN_BIT_COLORS = np.load(os.path.join(application_path, '15bitcolor.npy'))
 
-#OkLab format + alpha: Lightness, green-to-red, blue-to-yellow, alpha values
-COLOR_WEIGHT = np.array([1, 1, 1, 1])
+#OkLab format + alpha: Lightness, green-to-red, blue-to-yellow, Alpha
+COLOR_WEIGHT = np.array([1, 1, 1, 1], dtype=np.float32)
 
 @jit(nopython=True)
 def floyd_steinberg(image, palette):
@@ -44,14 +40,13 @@ def floyd_steinberg(image, palette):
     h, w = image.shape[:2]
     index_image = np.zeros((h, w), dtype=np.uint8)
     pal_vals = palette * COLOR_WEIGHT
-
     for y in range(h):
         for x in range(w):
             old = image[y, x]
             col_vals = old * COLOR_WEIGHT
             col_vals[0] = max(0.0, min(1.0, col_vals[0]))
-            col_vals[1] = max(-0.25, min(0.3, col_vals[1]))
-            col_vals[2] = max(-0.32, min(0.2, col_vals[2]))
+            col_vals[1] = max(-0.233922, min(0.276272, col_vals[1]))
+            col_vals[2] = max(-0.311621, min(0.198490, col_vals[2]))
             index = np.sum((pal_vals - col_vals) ** 2, axis=1).argmin()
             new = palette[index]
             index_image[y, x] = index
@@ -67,7 +62,7 @@ def floyd_steinberg(image, palette):
                 image[y + 1, x - 1] += error * 0.1875 # left, down, 3 / 16
     return index_image
     
-def _image_rescale(image_file : str, width : int, height : int, palette_size = 0, quiet = False):
+def _image_rescale(image_file : str, width : int, height : int):
     image = None
     
     with Image.open(image_file) as in_image:
@@ -83,6 +78,8 @@ def _image_rescale(image_file : str, width : int, height : int, palette_size = 0
     #  then the image is already fine,
     if not((width == og_w and height == og_h) or (width is None and height is None and og_w in ACCEPTED_SIZES and og_h in ACCEPTED_SIZES)):
         if width is not None and height is not None:
+            w = width
+            h = height
             image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
         else:
             if width is not None:
@@ -108,13 +105,13 @@ def _image_rescale(image_file : str, width : int, height : int, palette_size = 0
 
 ## Solidify image with OpenCV
 def _solidify(image : np.ndarray, quiet = False):
-    alpha = image[:, :, 3]
+    rgb, alpha = seperate_rgb_alpha(image)
 
     if not quiet:
         print("Solidifying...")
     max_alpha = np.max(alpha)
     inpaint_mask = cv2.bitwise_not(np.maximum(255,  alpha + (255 - max_alpha) + (max_alpha//2)))
-    image[:,:,:3] = cv2.inpaint(image[:, :, :3], inpaint_mask, 4, cv2.INPAINT_TELEA)
+    image[:,:,:3] = cv2.inpaint(rgb, inpaint_mask, 4, cv2.INPAINT_TELEA)
     
     return image
 
@@ -143,81 +140,104 @@ def _pad_image(image, h, w, palette = None, alpha = True):
             image = canvas
     return image
     
-## Quantize Image
-def _quantize(image : np.ndarray, palette_size : int, is_16_color = False, dither = True, quiet = False):
-    # set all fully transparent colors to consistent black (helps greatly with preserving mre colors in quantized image)
-    _alpha_stack = np.dstack((image[:, :, 3], image[:, :, 3], image[:, :, 3], image[:, :, 3]))
-    image = np.where(_alpha_stack > 10, image, np.zeros_like(image))
+def seperate_rgb_alpha(image : np.ndarray):
+    original_bounds = image.shape[:-1]
+    shaped_image = image.reshape((-1, 4))
+    rgb = shaped_image[:, :3].reshape(tuple(original_bounds) + (3,))
+    alpha = shaped_image[:, 3].reshape(tuple(original_bounds) + (1,))
+    return rgb, alpha
+
+def combine_rgb_alpha(rgb : np.ndarray, alpha : np.ndarray):
+    rgb_bounds = rgb.shape[:-1]
+    alpha = alpha.reshape(tuple(rgb_bounds) + (1,))
+    return np.concatenate((rgb, alpha), axis=-1)
+
+def srgba_to_work_image(srgba : np.ndarray):
+    # set up image for conversion
+    srgba = srgba.astype(np.float32) / 255
+    srgb, alpha = seperate_rgb_alpha(srgba)
+
+    # convert to Oklab colorspace
+    xyz = colour.sRGB_to_XYZ(srgb)
+    oklab = colour.XYZ_to_Oklab(xyz)
+    # combine Oklab colors with alpha and reshape
+    return combine_rgb_alpha(oklab, alpha)
+
+def work_colors_to_srgba(work_colors : np.ndarray):
+    work_colors, alpha = seperate_rgb_alpha(work_colors)
+
+    work_image = work_colors.reshape(-1, 1, 3)
+    xyz = colour.Oklab_to_XYZ(work_image)
+    srgb = colour.XYZ_to_sRGB(xyz)
+
+    srgb = np.round(srgb * 255, decimals=0).astype(dtype=np.uint8)
+    alpha = np.round(alpha * 255, decimals=0).astype(dtype=np.uint8)
     
+    return combine_rgb_alpha(srgb, alpha)
+
+## Quantize Image
+def _quantize(image : np.ndarray, palette_size : int, is_16_color = False, dither = False, quiet = False):
+    # NOT NEEDED set all fully transparent colors to consistent black (helps greatly with preserving mre colors in quantized image)
+    #_alpha_stack = np.dstack((image[:, :, 3], image[:, :, 3], image[:, :, 3], image[:, :, 3]))
+    #image = np.where(_alpha_stack > 10, image, np.zeros_like(image))
+
     if not quiet:
         print("Quantizing...")
 
-    # define starting image and alpha values
-    rgb = np.float32(image[:, :, :3]) / 255
-    alpha = np.float32(image[:, :, 3]) / 255
+    h, w = image.shape[:2]
 
-    # convert to Oklab colorspace
-    xyz = colour.sRGB_to_XYZ(rgb)
-    oklab = colour.XYZ_to_Oklab(xyz)
-    
-    # combine Oklab colors with alpha and reshape
-    oklab = np.dstack((oklab, alpha))
-    oklab_colors = oklab.reshape((-1,4))
-    
+    work_image = srgba_to_work_image(image)
+    work_colors = work_image.reshape(-1, 4)
+
     if is_16_color:
         # set the colors to quantize into to a precalculated list of valid 16 bit colors
-        labels = SIXTEEN_BIT_COLORS
+        labels = FIFTEEN_BIT_COLORS
     else:
         labels = None
 
     # define criteria and quantize with kmeans
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    _, _pal_img, palette = cv2.kmeans(np.float32(oklab_colors), palette_size, labels, criteria, 10, cv2.KMEANS_PP_CENTERS)
+    _, _pal_img, palette = cv2.kmeans(np.float32(work_colors), palette_size, labels, criteria, 10, cv2.KMEANS_PP_CENTERS)
 
     if dither:
-        indexes = floyd_steinberg(oklab, palette)
+        indexes = floyd_steinberg(work_image, palette)
     else:
-        indexes = _pal_img
+        indexes = _pal_img.reshape(h, w, 1)
 
-    # convert palette to RGB colorspace
-    pal_alpha = np.round(palette[:, 3] * 255, decimals=0).astype(dtype=np.uint8)
-    palette = palette[:, :3]
-    palette = palette.reshape((-1, 1, 3))
-    pal_xyz = colour.Oklab_to_XYZ(palette)
-    pal_rgb = colour.XYZ_to_sRGB(pal_xyz)
-    pal_rgb = np.round(pal_rgb * 255, decimals=0).astype(dtype=np.uint8)
-    
-    pal_rgb = pal_rgb.reshape((-1, 3))
-    
-    pal_alpha = pal_alpha.reshape((-1, 1))
-    pal_rgb = np.hstack((pal_rgb, pal_alpha))
-    pal_rgb[:, 3] = np.where(pal_rgb[:, 3] <= 245, pal_rgb[:, 3], 255)
+    # convert palette to sRGB colorspace
+    pal_srgba = work_colors_to_srgba(palette)
 
-    return indexes, pal_rgb
+    return indexes, pal_srgba
+
+def premultiply_alpha(image : np.ndarray):
+    image = image.astype(np.float32) / 255
+    rgb, alpha = seperate_rgb_alpha(image)
+    rgb *= alpha
+    alpha *= alpha
+    return (combine_rgb_alpha(rgb, alpha) * 255).astype(np.uint8)
 
 ## Main function controlling image preparation and editing
 def _image_process(image_file : str, palette_size : int, width=None, height=None, solidify=True, is_16_color = False, quiet = False):
-    image, h, w = _image_rescale(image_file, width, height, palette_size)
+    image, h, w = _image_rescale(image_file, width, height)
     
     alpha = False
     if image[:,:,3].min() < 255:
         alpha = True
         if solidify:
             image = _solidify(image, quiet=quiet)
+        image = premultiply_alpha(image)
     
     if palette_size > 0:
         dither = min(image.shape[0], image.shape[1]) > 128
         image, palette = _quantize(image, palette_size, is_16_color, dither=dither, quiet=quiet)
     else:
+        if is_16_color:
+            if not quiet:
+                print('Converting to 16-bit color, this can take a while...')
+            image = floyd_steinberg(image, FIFTEEN_BIT_COLORS)
         palette = None
 
     image = _pad_image(image, h, w, palette, alpha)
-               
-    if palette is not None:
-        height, width = image.shape[:2]
-        out_image = palette[image.flatten()].reshape((height, width, -1))
-    else:
-        out_image = image
 
     return image, palette
 
@@ -228,7 +248,7 @@ def main(input_file : str, output_file : str, width : int, height : int, palette
     out_split = os.path.splitext(output_file)
 
     if user_comment is None:
-        comment = out_split[0]
+        comment = os.path.basename(out_split[0])
     else:
         comment = user_comment
 
@@ -245,11 +265,9 @@ def main(input_file : str, output_file : str, width : int, height : int, palette
             image, palette = _quantize(image, palette_size, is_16_color, quiet=quiet)
         else:
             palette = None
-        
     else:
         image, palette = _image_process(input_file, palette_size, width, height, no_solidify, is_16_color, quiet=quiet)
         
-
     # Output Handling
     if out_split[1].upper() == '.TMX':
         tmx = tmx.from_image(image, palette)

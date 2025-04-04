@@ -223,7 +223,8 @@ class TMXFile:
             tmxfile.write(np.uint16(self.user_id).tobytes())
             tmxfile.write(np.uint32(file_len).tobytes())
             tmxfile.write(self.file_tag)
-            tmxfile.write(np.uint32(0).tobytes()) # Padding
+            #tmxfile.write(np.uint32(0).tobytes()) # Padding
+            tmxfile.write('BLST'.encode('ascii'))
             # Picture Header
             tmxfile.write(np.uint8((self.palette_data is not None)).tobytes())
             tmxfile.write(np.uint8(self.palette_mode.code).tobytes())
